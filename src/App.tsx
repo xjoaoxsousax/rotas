@@ -1,8 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Bus, Info, ArrowRight, Map as MapIcon } from 'lucide-react';
-import { MapContainer, TileLayer, GeoJSON, useMap, LayersControl } from 'react-leaflet';
+import { Search, Bus, Info, ArrowRight, Map as MapIcon, Download } from 'lucide-react';
+import { MapContainer, TileLayer, GeoJSON, useMap, LayersControl, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toGPX } from '@tmcw/togpx';
+import L from 'leaflet';
+
+// Ícones personalizados para os marcadores
+const startIcon = new L.Icon({
+  iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', // Ícone para o ponto inicial
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+});
+
+const endIcon = new L.Icon({
+  iconUrl: 'https://cdn-icons-png.flaticon.com/512/149/149060.png', // Ícone para o ponto final
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+});
 
 interface RouteDetails {
   short_name: string;
@@ -19,6 +35,7 @@ interface Pattern {
   long_name: string;
   shape_id: string;
   route_id: string;
+  route_long_name: string;
 }
 
 interface Shape {
@@ -40,7 +57,7 @@ function MapUpdater({ geojson }: { geojson: any }) {
   return null;
 }
 
-function geojsonToGpx(geojson: any): string {
+function geojsonToGpx(geojson: any, origin: string, destination: string): string {
   if (!geojson || geojson.type !== "FeatureCollection") {
     throw new Error("GeoJSON inválido. Certifique-se de que é um FeatureCollection.");
   }
@@ -48,13 +65,40 @@ function geojsonToGpx(geojson: any): string {
   const gpxHeader = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="CustomConverter" xmlns="http://www.topografix.com/GPX/1/1">
 `;
+
   const gpxFooter = `</gpx>`;
 
+  // Adiciona waypoints para o início e o fim da rota
+  const waypoints = (() => {
+    const firstCoord = geojson.features[0]?.geometry.coordinates[0];
+    const lastCoord =
+      geojson.features[0]?.geometry.coordinates[
+        geojson.features[0]?.geometry.coordinates.length - 1
+      ];
+
+    if (!firstCoord || !lastCoord) {
+      throw new Error("Coordenadas de início ou fim não encontradas.");
+    }
+
+    return `
+<wpt lon="${firstCoord[0]}" lat="${firstCoord[1]}">
+  <name>${origin}</name>
+</wpt>
+<wpt lon="${lastCoord[0]}" lat="${lastCoord[1]}">
+  <name>${destination}</name>
+</wpt>
+`;
+  })();
+
+  // Adiciona os segmentos da rota
   const gpxBody = geojson.features
     .map((feature: any) => {
       if (feature.geometry.type === "LineString") {
         const coordinates = feature.geometry.coordinates
-          .map((coord: number[]) => `<trkpt lon="${coord[0]}" lat="${coord[1]}"></trkpt>`)
+          .map(
+            (coord: number[]) =>
+              `<trkpt lon="${coord[0]}" lat="${coord[1]}"></trkpt>`
+          )
           .join("\n");
         return `<trk><name>${feature.properties?.name || "Rota"}</name><trkseg>${coordinates}</trkseg></trk>`;
       }
@@ -62,7 +106,7 @@ function geojsonToGpx(geojson: any): string {
     })
     .join("\n");
 
-  return gpxHeader + gpxBody + gpxFooter;
+  return gpxHeader + waypoints + gpxBody + gpxFooter;
 }
 
 function App() {
@@ -109,7 +153,8 @@ function App() {
           
           return {
             ...patternData,
-            long_name: `${patternData.headsign} - ${routeData.long_name}`
+            route_long_name: routeData.long_name,
+            long_name: routeData.long_name
           };
         })
       );
@@ -127,21 +172,28 @@ function App() {
       const shapeResponse = await fetch(`https://api.carrismetropolitana.pt/shapes/${pattern.shape_id}`);
       if (!shapeResponse.ok) throw new Error('Erro ao carregar o shape');
       const shapeData = await shapeResponse.json();
-      console.log('Shape Data:', shapeData); // Verifique os dados aqui
       setShapeData(shapeData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar dados do padrão');
     }
   };
 
+  const getRouteEndpoints = (headsign: string) => {
+    const parts = headsign.split(' - ');
+    return {
+      origin: parts[0],
+      destination: parts[parts.length - 1]
+    };
+  };
+
   const downloadGPX = () => {
-    if (!shapeData || !shapeData.geojson || !shapeData.geojson.geometry) {
-      setError('Nenhum dado de rota disponível para exportar.');
+    if (!shapeData || !shapeData.geojson) {
+      setError("Nenhum dado de rota disponível para exportar.");
       return;
     }
 
     if (!selectedPattern) {
-      setError('Nenhum padrão de rota selecionado.');
+      setError("Nenhum padrão de rota selecionado.");
       return;
     }
 
@@ -158,22 +210,27 @@ function App() {
         ],
       };
 
-      console.log('GeoJSON para GPX:', geojson); // Log para depuração
-      const gpxData = geojsonToGpx(geojson); // Converte GeoJSON para GPX
-      console.log('GPX gerado:', gpxData); // Log para depuração
+      console.log("GeoJSON para GPX:", geojson); // Log para depuração
+
+      // Obter o início e o fim da rota
+      const { origin, destination } = getRouteEndpoints(selectedPattern.headsign);
+
+      // Converte GeoJSON para GPX com início e fim
+      const gpxData = geojsonToGpx(geojson, origin, destination);
+      console.log("GPX gerado:", gpxData); // Log para depuração
 
       // Formatar o nome do arquivo
       const routeName = selectedPattern.long_name
-        .replace(/[^a-zA-Z0-9\s]/g, '') // Remove caracteres especiais
-        .replace(/\s+/g, '_') // Substitui espaços por underscores
+        .replace(/[^a-zA-Z0-9\s]/g, "") // Remove caracteres especiais
+        .replace(/\s+/g, "_") // Substitui espaços por underscores
         .trim(); // Remove espaços extras no início e no fim
-      const fileName = `${routeDetails?.short_name || 'Rota'}_${routeName}.gpx`;
+      const fileName = `${routeDetails?.short_name || "Rota"}_${routeName}.gpx`;
 
       // Cria um link para download
-      const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+      const blob = new Blob([gpxData], { type: "application/gpx+xml" });
       const url = URL.createObjectURL(blob);
 
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = url;
       link.download = fileName;
       link.click();
@@ -181,8 +238,8 @@ function App() {
       // Libera o URL após o download
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error('Erro ao gerar GPX:', err);
-      setError('Erro ao gerar o arquivo GPX.');
+      console.error("Erro ao gerar GPX:", err);
+      setError("Erro ao gerar o arquivo GPX.");
     }
   };
 
@@ -247,66 +304,135 @@ function App() {
             <div className="mt-6">
               <h3 className="text-lg font-medium text-gray-900 mb-3 flex items-center gap-2">
                 <MapIcon className="w-5 h-5 text-blue-600" />
-                Padrões de Rota
+                Selecionar percurso/destino
               </h3>
               <div className="grid gap-3">
-                {patterns.map((pattern) => (
-                  <button
-                    key={pattern.id}
-                    onClick={() => fetchPattern(pattern)}
-                    className={`text-left px-4 py-3 rounded-lg transition-colors flex items-center justify-between ${
-                      selectedPattern?.id === pattern.id
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'bg-gray-50 hover:bg-gray-100 text-gray-700'
-                    }`}
-                  >
-                    <span className="flex-1">{pattern.long_name}</span>
-                    <ArrowRight className={`w-5 h-5 ${
-                      selectedPattern?.id === pattern.id ? 'text-blue-600' : 'text-gray-400'
-                    }`} />
-                  </button>
-                ))}
+                {patterns.map((pattern) => {
+                  const { origin, destination } = getRouteEndpoints(pattern.headsign);
+                  return (
+                    <button
+                      key={pattern.id}
+                      onClick={() => fetchPattern(pattern)}
+                      className={`text-left px-4 py-3 rounded-lg transition-colors ${
+                        selectedPattern?.id === pattern.id
+                          ? 'bg-blue-50 text-blue-700'
+                          : 'bg-gray-50 hover:bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          {/* Nome da rota sem estilização */}
+                          <p className="font-bold text-base">
+                            {origin} - {destination}
+                          </p>
+                          <p className="text-sm text-gray-600 mt-1">
+                            {pattern.route_long_name}
+                          </p>
+                        </div>
+                        <ArrowRight
+                          className={`w-5 h-5 flex-shrink-0 ${
+                            selectedPattern?.id === pattern.id ? 'text-blue-600' : 'text-gray-400'
+                          }`}
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             {/* Map Section */}
             <div className="mt-6">
-              <div className="h-[400px] w-full rounded-lg border border-gray-200 overflow-hidden">
-                <MapContainer
-                  center={[38.736946, -9.142685]}
-                  zoom={12}
-                  style={{ height: '100%', width: '100%' }}
-                >
-                  <LayersControl position="topright">
-                    <LayersControl.BaseLayer checked name="Mapa">
-                      <TileLayer
-                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                      />
-                    </LayersControl.BaseLayer>
-                    <LayersControl.BaseLayer name="Satélite">
-                      <TileLayer
-                        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                        attribution='&copy; <a href="https://www.esri.com">Esri</a>'
-                      />
-                    </LayersControl.BaseLayer>
-                  </LayersControl>
-                  {shapeData && <GeoJSON key={selectedPattern?.id} data={shapeData.geojson} />}
-                  {shapeData && <MapUpdater geojson={shapeData.geojson} />}
-                </MapContainer>
-              </div>
+              <div className="relative">
+                <div className="h-[400px] w-full rounded-lg border border-gray-200 overflow-hidden">
+                  <MapContainer
+                    center={[38.736946, -9.142685]}
+                    zoom={12}
+                    style={{ height: '100%', width: '100%' }}
+                  >
+                    {/* Camadas e marcadores */}
+                    <LayersControl position="topright">
+                      <LayersControl.BaseLayer checked name="Mapa">
+                        <TileLayer
+                          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        />
+                      </LayersControl.BaseLayer>
+                      <LayersControl.BaseLayer name="Satélite">
+                        <TileLayer
+                          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                          attribution='&copy; <a href="https://www.esri.com">Esri</a>'
+                        />
+                      </LayersControl.BaseLayer>
+                    </LayersControl>
 
-              {/* Botão para baixar GPX */}
-              {shapeData && (
-                <div className="mt-4">
+                    {shapeData && <GeoJSON key={selectedPattern?.id} data={shapeData.geojson} />}
+                    {shapeData && <MapUpdater geojson={shapeData.geojson} />}
+
+                    {shapeData && shapeData.geojson && (
+                      <>
+                        <Marker
+                          position={[
+                            shapeData.geojson.geometry.coordinates[0][1],
+                            shapeData.geojson.geometry.coordinates[0][0],
+                          ]}
+                          icon={startIcon}
+                        >
+                          <Popup>Início: {getRouteEndpoints(selectedPattern?.headsign || '').origin}</Popup>
+                        </Marker>
+
+                        <Marker
+                          position={[
+                            shapeData.geojson.geometry.coordinates[
+                              shapeData.geojson.geometry.coordinates.length - 1
+                            ][1],
+                            shapeData.geojson.geometry.coordinates[
+                              shapeData.geojson.geometry.coordinates.length - 1
+                            ][0],
+                          ]}
+                          icon={endIcon}
+                        >
+                          <Popup>Fim: {getRouteEndpoints(selectedPattern?.headsign || '').destination}</Popup>
+                        </Marker>
+                      </>
+                    )}
+                  </MapContainer>
+                </div>
+
+                {/* Botão para baixar GPX */}
+                {selectedPattern && (
                   <button
                     onClick={downloadGPX}
-                    className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-700"
+                    className="absolute bottom-4 left-4 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-md flex items-center gap-2 hover:bg-blue-700 transition-colors z-[1000]"
                   >
-                    Baixar GPX
+                    <Download className="w-5 h-5" />
+                    <span>Baixar GPX</span>
                   </button>
+                )}
+              </div>
+
+              {/* Legenda */}
+              <div className="mt-4 flex items-center gap-4">
+                {/* Ponto de origem */}
+                <div className="flex items-center gap-2">
+                  <img
+                    src="https://cdn-icons-png.flaticon.com/512/684/684908.png"
+                    alt="Ponto de origem"
+                    className="w-6 h-6"
+                  />
+                  <span className="text-gray-700 font-medium">Origem</span>
                 </div>
-              )}
+
+                {/* Ponto de destino */}
+                <div className="flex items-center gap-2">
+                  <img
+                    src="https://cdn-icons-png.flaticon.com/512/149/149060.png"
+                    alt="Ponto de destino"
+                    className="w-6 h-6"
+                  />
+                  <span className="text-gray-700 font-medium">Destino</span>
+                </div>
+              </div>
             </div>
           </div>
         )}
