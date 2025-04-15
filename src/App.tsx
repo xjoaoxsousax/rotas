@@ -186,62 +186,44 @@ function App() {
     };
   };
 
-  const downloadGPX = () => {
-    if (!shapeData || !shapeData.geojson) {
-      setError("Nenhum dado de rota disponível para exportar.");
-      return;
-    }
+  const downloadGPX = async () => {
+  if (!selectedPattern || !shapeData || !routeDetails) {
+    setError('Nenhum padrão selecionado ou dados de forma indisponíveis.');
+    return;
+  }
 
-    if (!selectedPattern) {
-      setError("Nenhum padrão de rota selecionado.");
-      return;
-    }
+  try {
+    const gpxData = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Carris Metropolitana">
+  <trk>
+    <name>${selectedPattern.headsign}</name>
+    <trkseg>
+${shapeData.geojson.geometry.coordinates
+  .map(
+    (coord: [number, number]) =>
+      `      <trkpt lat="${coord[1]}" lon="${coord[0]}"></trkpt>`
+  )
+  .join('\n')}
+    </trkseg>
+  </trk>
+</gpx>`.trim();
 
-    try {
-      // Ajustar a estrutura do GeoJSON para um FeatureCollection
-      const geojson = {
-        type: "FeatureCollection",
-        features: [
-          {
-            type: "Feature",
-            geometry: shapeData.geojson.geometry,
-            properties: {}, // Adicione propriedades se necessário
-          },
-        ],
-      };
+    const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+    const url = window.URL.createObjectURL(blob);
 
-      console.log("GeoJSON para GPX:", geojson); // Log para depuração
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rota-${routeDetails.short_name}-${selectedPattern.headsign.replace(/\s+/g, '-')}.gpx`;
 
-      // Obter o início e o fim da rota
-      const { origin, destination } = getRouteEndpoints(selectedPattern.headsign);
-
-      // Converte GeoJSON para GPX com início e fim
-      const gpxData = geojsonToGpx(geojson, origin, destination);
-      console.log("GPX gerado:", gpxData); // Log para depuração
-
-      // Formatar o nome do arquivo
-      const routeName = selectedPattern.long_name
-        .replace(/[^a-zA-Z0-9\s]/g, "") // Remove caracteres especiais
-        .replace(/\s+/g, "_") // Substitui espaços por underscores
-        .trim(); // Remove espaços extras no início e no fim
-      const fileName = `${routeDetails?.short_name || "Rota"}_${routeName}.gpx`;
-
-      // Cria um link para download
-      const blob = new Blob([gpxData], { type: "application/gpx+xml" });
-      const url = URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName;
-      link.click();
-
-      // Libera o URL após o download
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Erro ao gerar GPX:", err);
-      setError("Erro ao gerar o arquivo GPX.");
-    }
-  };
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  } catch (err) {
+    console.error('Erro ao gerar GPX:', err);
+    setError('Erro ao gerar arquivo GPX');
+  }
+};
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
